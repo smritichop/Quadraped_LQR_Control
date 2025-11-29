@@ -78,15 +78,19 @@ for k = 1:N
     u_log(:,k) = u;
 end
 
+% Extract px and py from the state log (force column vectors to match references)
+px = x_log(1, :).';  % First row corresponds to px (now Nx1)
+py = x_log(2, :).';  % Second row corresponds to py (now Nx1)
+assert(iscolumn(px) && iscolumn(py), 'px and py should be column vectors.');
 
 %% 5) Plot tracking
 figure;
 subplot(2,1,1);
-plot(t, px_ref, 'k--', t, x_log(1,:), 'LineWidth', 1.3);
+plot(t, px_ref, 'k--', t, px, 'LineWidth', 1.3);
 legend('p_x ref','p_x'); grid on;
 
 subplot(2,1,2);
-plot(t, py_ref, 'k--', t, x_log(2,:), 'LineWidth', 1.3);
+plot(t, py_ref, 'k--', t, py, 'LineWidth', 1.3);
 legend('p_y ref','p_y'); grid on;
 
 %% ============================================================
@@ -114,35 +118,53 @@ rms_ey = sqrt(mean(ey.^2));
 %% ---- Steady-state error (last 20% of simulation) ----
 idx_ss = round(0.8*length(t)):length(t);
 
+% validate steady-state index range
+if isempty(idx_ss)
+    error('Steady-state index range is empty. Check simulation time vector.');
+end
+
 ess_px = mean(px_ref(idx_ss) - px(idx_ss));
 ess_py = mean(py_ref(idx_ss) - py(idx_ss));
+assert(isscalar(ess_px) && isscalar(ess_py), 'Steady-state errors should be scalar means.');
 
 %% ---- Overshoot (relative overshoot in tracking) ----
 % compute overshoot wrt final reference value
 final_px = px_ref(end);
 final_py = py_ref(end);
 
-% guard against division by zero
-if abs(final_px) > 1e-6
-    OS_px = (max(px) - final_px) / abs(final_px) * 100;
+% (idx_ss already validated above)
+
+% Guard against division by zero for overshoot calculation
+if abs(final_px) < 1e-6
+    OS_px = max(abs(px));  % Absolute overshoot
 else
-    OS_px = max(abs(px));  % absolute overshoot
+    OS_px = (max(px) - final_px) / abs(final_px) * 100;
 end
 
-if abs(final_py) > 1e-6
-    OS_py = (max(py) - final_py) / abs(final_py) * 100;
-else
+if abs(final_py) < 1e-6
     OS_py = max(abs(py));
+else
+    OS_py = (max(py) - final_py) / abs(final_py) * 100;
 end
 
 %% ---- Settling time (within ±2 cm band) ----
 tol = 0.02;   % 2 cm tolerance
 
+% Find first time within tolerance
 idx_px = find(abs(px - final_px) <= tol, 1, 'first');
 idx_py = find(abs(py - final_py) <= tol, 1, 'first');
 
-if isempty(idx_px); Ts_px = NaN; else; Ts_px = t(idx_px); end
-if isempty(idx_py); Ts_py = NaN; else; Ts_py = t(idx_py); end
+if isempty(idx_px)
+    Ts_px = NaN;  % Did not settle within tolerance
+else
+    Ts_px = t(idx_px);
+end
+
+if isempty(idx_py)
+    Ts_py = NaN;
+else
+    Ts_py = t(idx_py);
+end
 
 %% ---- Print results ----
 fprintf("Max Error (x): %.4f m\n", max_ex);
