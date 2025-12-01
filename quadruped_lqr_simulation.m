@@ -162,14 +162,14 @@ fprintf('  Integral gain K_i: [%d x %d]\n\n', size(K_i, 1), size(K_i, 2));
 % Simple PD control on position and orientation
 % This represents a "traditional" approach without optimal control
 
-% PD gains (tuned for reasonable performance)
-Kp_pd = diag([300,    ... % px
-              800,    ... % pz
-              500]);  ... % theta
+% PD gains (tuned for reasonable performance - higher for better tracking)
+Kp_pd = diag([500,    ... % px (horizontal position)
+              1200,   ... % pz (height - high gain for gravity compensation)
+              800]);  ... % theta (pitch angle)
 
-Kd_pd = diag([100,    ... % vx
-              200,    ... % vz
-              80]);   ... % omega
+Kd_pd = diag([150,    ... % vx (horizontal velocity)
+              300,    ... % vz (vertical velocity)
+              120]);  ... % omega (pitch rate)
 
 fprintf('Baseline PD Controller designed\n\n');
 
@@ -321,25 +321,31 @@ for k = 1:(N-1)
     % Reference at current time
     ref_curr = x_ref(k, :)';
     
-    % Position/orientation errors
-    e_pos = ref_curr(1:3) - x_curr(1:3);  % [px; pz; theta] error
-    e_vel = ref_curr(4:6) - x_curr(4:6);  % [vx; vz; omega] error
+    % Position/orientation errors (reference - current)
+    e_pos = ref_curr(1:3) - x_curr(1:3);  % [px_err; pz_err; theta_err]
+    e_vel = ref_curr(4:6) - x_curr(4:6);  % [vx_err; vz_err; omega_err]
     
     % PD control law: compute desired body forces/torque
-    F_des = Kp_pd * e_pos + Kd_pd * e_vel;  % [Fx; Fz; Tau]
+    % F_des = [Fx_body; Fz_body; Tau_pitch]
+    F_des = Kp_pd * e_pos + Kd_pd * e_vel;
     
-    % Add gravity compensation
-    F_des(2) = F_des(2) + params.m * params.g;
+    % Add gravity compensation to vertical force
+    Fz_total = F_des(2) + params.m * params.g;
+    Fx_total = F_des(1);
+    Tau_total = F_des(3);
     
-    % Distribute forces to legs (simple equal distribution)
-    % Fx = f1x + f2x  ->  f1x = f2x = Fx/2
-    % Fz = f1z + f2z  ->  f1z = f2z = Fz/2
-    % Tau = L*f1z - L*f2z  ->  f1z = (Fz + Tau/L)/2, f2z = (Fz - Tau/L)/2
+    % Distribute forces to legs
+    % Total horizontal: Fx = f1x + f2x
+    % Total vertical: Fz = f1z + f2z  
+    % Total torque: Tau = L*f1z - L*f2z (front leg creates positive pitch torque)
+    %
+    % Solving: f1z = (Fz + Tau/L) / 2
+    %          f2z = (Fz - Tau/L) / 2
     
-    f1x = F_des(1) / 2;
-    f2x = F_des(1) / 2;
-    f1z = (F_des(2) + F_des(3) / params.L) / 2;
-    f2z = (F_des(2) - F_des(3) / params.L) / 2;
+    f1z = (Fz_total + Tau_total / params.L) / 2;
+    f2z = (Fz_total - Tau_total / params.L) / 2;
+    f1x = Fx_total / 2;
+    f2x = Fx_total / 2;
     
     u = [f1x; f1z; f2x; f2z];
     
@@ -375,50 +381,85 @@ x_pd_dist = zeros(N, nx);
 x_lqr_dist(1, :) = x0';
 x_pd_dist(1, :) = x0';
 
-% Integral state for LQR
+% Integral state for LQR (reset for this test)
 z_int_dist = zeros(ny, 1);
 
 % Disturbance: impulse force at t = 2.5s
+% Apply as an impulse to velocity states (like being kicked)
 t_disturb = 2.5;
-F_disturb = [50; 0; 0; 0; 0; 5];  % 50N horizontal push + pitch moment
+k_disturb = round(t_disturb / dt);
 
-% Use constant reference for cleaner comparison
+% Impulse: 50N for 50ms = 2.5 N*s impulse
+% Delta_v = impulse / mass = 2.5 / 43 ≈ 0.058 m/s horizontal velocity change
+impulse_duration = 0.05;  % 50 ms
+k_impulse_end = k_disturb + round(impulse_duration / dt);
+
+F_disturb_force = 50;   % 50 N horizontal push
+Tau_disturb = 10;       % 10 Nm pitch disturbance torque
+
+% Use constant reference for cleaner comparison (hover in place)
 x_ref_const = repmat([0, params.h_nom, 0, 0, 0, 0], N, 1);
 
 for k = 1:(N-1)
-    % Apply disturbance
-    disturb = zeros(nx, 1);
-    if abs(t(k) - t_disturb) < dt
-        disturb = F_disturb * dt;
+    % Compute external disturbance force (applied through dynamics)
+    if k >= k_disturb && k < k_impulse_end
+        % Disturbance as external force: creates acceleration
+        % a_disturb = F_disturb / m, alpha_disturb = Tau_disturb / I
+        accel_disturb = [0; 0; 0; F_disturb_force/params.m; 0; Tau_disturb/params.Iyy] * dt;
+    else
+        accel_disturb = zeros(nx, 1);
     end
     
-    % --- LQR ---
+    % --- LQR Controller ---
     x_curr = x_lqr_dist(k, :)';
     ref_curr = x_ref_const(k, :)';
     e_state = x_curr - ref_curr;
     e_track = C_y * e_state;
+    
+    % Update integral with anti-windup
     z_int_dist = z_int_dist + e_track * dt;
-    z_int_dist = max(min(z_int_dist, 1.0), -1.0);
+    z_int_dist = max(min(z_int_dist, 0.5), -0.5);  % tighter clamp for stability
+    
+    % LQR control
     u_delta = -K_x * e_state - K_i * z_int_dist;
     u = f_eq + u_delta;
     u = apply_force_constraints(u, params);
-    x_next = A_d * x_curr + B_d * u + g_d + disturb;
-    if x_next(2) < 0.1; x_next(2) = 0.1; x_next(5) = max(x_next(5), 0); end
+    
+    % Dynamics with disturbance
+    x_next = A_d * x_curr + B_d * u + g_d + accel_disturb;
+    
+    % Ground constraint
+    if x_next(2) < 0.15
+        x_next(2) = 0.15;
+        x_next(5) = max(x_next(5), 0);
+    end
     x_lqr_dist(k+1, :) = x_next';
     
-    % --- PD ---
+    % --- PD Controller ---
     x_curr = x_pd_dist(k, :)';
     e_pos = ref_curr(1:3) - x_curr(1:3);
     e_vel = ref_curr(4:6) - x_curr(4:6);
+    
     F_des = Kp_pd * e_pos + Kd_pd * e_vel;
-    F_des(2) = F_des(2) + params.m * params.g;
-    f1x = F_des(1) / 2;
-    f2x = F_des(1) / 2;
-    f1z = (F_des(2) + F_des(3) / params.L) / 2;
-    f2z = (F_des(2) - F_des(3) / params.L) / 2;
+    Fz_total = F_des(2) + params.m * params.g;
+    Fx_total = F_des(1);
+    Tau_total = F_des(3);
+    
+    f1z = (Fz_total + Tau_total / params.L) / 2;
+    f2z = (Fz_total - Tau_total / params.L) / 2;
+    f1x = Fx_total / 2;
+    f2x = Fx_total / 2;
+    
     u = apply_force_constraints([f1x; f1z; f2x; f2z], params);
-    x_next = A_d * x_curr + B_d * u + g_d + disturb;
-    if x_next(2) < 0.1; x_next(2) = 0.1; x_next(5) = max(x_next(5), 0); end
+    
+    % Dynamics with disturbance
+    x_next = A_d * x_curr + B_d * u + g_d + accel_disturb;
+    
+    % Ground constraint
+    if x_next(2) < 0.15
+        x_next(2) = 0.15;
+        x_next(5) = max(x_next(5), 0);
+    end
     x_pd_dist(k+1, :) = x_next';
 end
 
@@ -480,13 +521,15 @@ fprintf('  LQR: %.2e N^2*s,  PD: %.2e N^2*s  (%.1f%% reduction)\n', ...
 
 % --- Disturbance Rejection ---
 fprintf('\n--- DISTURBANCE REJECTION ---\n');
+fprintf('Disturbance: %.0f N horizontal force + %.0f Nm pitch torque for %.0f ms\n', ...
+    F_disturb_force, Tau_disturb, impulse_duration*1000);
 
 % Find settling time after disturbance (within 2cm of reference)
-idx_disturb = find(t >= t_disturb, 1);
+idx_after_disturb = k_impulse_end;  % Start measuring after impulse ends
 tol = 0.02;  % 2 cm
 
-% LQR settling
-pz_err_lqr = abs(x_lqr_dist(idx_disturb:end, 2) - params.h_nom);
+% LQR settling - find when height returns to within tolerance
+pz_err_lqr = abs(x_lqr_dist(idx_after_disturb:end, 2) - params.h_nom);
 idx_settle_lqr = find(pz_err_lqr < tol, 1);
 if isempty(idx_settle_lqr)
     Ts_lqr = NaN;
@@ -495,7 +538,7 @@ else
 end
 
 % PD settling  
-pz_err_pd = abs(x_pd_dist(idx_disturb:end, 2) - params.h_nom);
+pz_err_pd = abs(x_pd_dist(idx_after_disturb:end, 2) - params.h_nom);
 idx_settle_pd = find(pz_err_pd < tol, 1);
 if isempty(idx_settle_pd)
     Ts_pd = NaN;
@@ -507,13 +550,14 @@ fprintf('Settling Time (height, 2cm tolerance):\n');
 fprintf('  LQR: %.3f s,  PD: %.3f s\n', Ts_lqr, Ts_pd);
 
 % Max deviation after disturbance
-max_dev_lqr = max(abs(x_lqr_dist(idx_disturb:end, 1:3) - x_ref_const(idx_disturb:end, 1:3)));
-max_dev_pd = max(abs(x_pd_dist(idx_disturb:end, 1:3) - x_ref_const(idx_disturb:end, 1:3)));
+max_dev_lqr = max(abs(x_lqr_dist(k_disturb:end, 1:3) - x_ref_const(k_disturb:end, 1:3)));
+max_dev_pd = max(abs(x_pd_dist(k_disturb:end, 1:3) - x_ref_const(k_disturb:end, 1:3)));
 
 fprintf('Max Deviation After Disturbance:\n');
 fprintf('  px:    LQR: %.4f m,    PD: %.4f m\n', max_dev_lqr(1), max_dev_pd(1));
 fprintf('  pz:    LQR: %.4f m,    PD: %.4f m\n', max_dev_lqr(2), max_dev_pd(2));
-fprintf('  theta: LQR: %.4f rad,  PD: %.4f rad\n', max_dev_lqr(3), max_dev_pd(3));
+fprintf('  theta: LQR: %.4f rad (%.2f deg),  PD: %.4f rad (%.2f deg)\n', ...
+    max_dev_lqr(3), rad2deg(max_dev_lqr(3)), max_dev_pd(3), rad2deg(max_dev_pd(3)));
 
 fprintf('\n=====================================================\n');
 
