@@ -146,25 +146,22 @@ fprintf('  Sample time: %.4f s\n\n', dt);
 %% ============================================================
 % 3) LQR CONTROLLER DESIGN
 %% ============================================================
-% Track: roll, pitch, yaw, px, py, pz (6 outputs)
-
-ny = 6;  % outputs to track
-
 % LQR weight matrices
 % State: [φ, θ, ψ, px, py, pz, ωx, ωy, ωz, vx, vy, vz]
 
+% Q matrix for states - penalize deviations
 Q = diag([2000,   ... % roll - HIGH (stability critical)
-        2000,   ... % pitch - HIGH (stability critical)  
-        1000,   ... % yaw - moderate (orientation)
-        500,    ... % px position
-        500,    ... % py position
-        3000,   ... % pz height - VERY HIGH (safety)
-        100,    ... % ωx roll rate
-        100,    ... % ωy pitch rate
-        50,     ... % ωz yaw rate
-        50,     ... % vx velocity
-        50,     ... % vy velocity
-        200]);  ... % vz velocity - helps height control
+          2000,   ... % pitch - HIGH (stability critical)  
+          1000,   ... % yaw - moderate (orientation)
+          500,    ... % px position
+          500,    ... % py position
+          3000,   ... % pz height - VERY HIGH (safety)
+          100,    ... % ωx roll rate
+          100,    ... % ωy pitch rate
+          50,     ... % ωz yaw rate
+          50,     ... % vx velocity
+          50,     ... % vy velocity
+          200]);  ... % vz velocity - helps height control
 
 % R matrix - penalize control effort (all 12 force components)
 % Lower values = more aggressive control
@@ -177,7 +174,7 @@ R = blkdiag(R_leg, R_leg, R_leg, R_leg);  % Same for all 4 legs
 [K, ~, ~] = lqr(A_c, B_c, Q, R);
 
 fprintf('LQR Controller designed:\n');
-fprintf('  State gain K: [%d x %d]\n', size(K, 1), size(K, 2))
+fprintf('  State gain K: [%d x %d]\n', size(K, 1), size(K, 2));
 fprintf('  Total gains to tune: 1 (Q/R matrices)\n\n');
 
 %% ============================================================
@@ -438,8 +435,6 @@ x_lqr = zeros(N, nx);
 u_lqr = zeros(N, nu);
 x_lqr(1, :) = x0';
 
-% Integral state
-z_int = zeros(ny, 1);
 
 % Equilibrium forces (gravity compensation, equal distribution)
 f_eq_per_leg = [0; 0; params.m * params.g / 4];
@@ -535,8 +530,6 @@ x_pd_dist = zeros(N, nx);
 x_lqr_dist(1, :) = x0';
 x_pd_dist(1, :) = x0';
 
-z_int_dist = zeros(ny, 1);
-
 % LARGE disturbance: like a strong push or steep slope
 % 100N ≈ 10kg equivalent push on 43kg robot (significant!)
 % 20Nm yaw torque ≈ someone grabbing and twisting the robot
@@ -554,7 +547,7 @@ x_ref_hover = repmat([0, 0, 0, 0, 0, params.h_nom, 0, 0, 0, 0, 0, 0], N, 1);
 
 for k = 1:(N-1)
     % External disturbance (applied as acceleration)
-    if t(k) >= t_disturb_start
+    if t(k) >= t_disturb_start && t(k) < t_disturb_start + 2.0
         accel_disturb = zeros(nx, 1);
         accel_disturb(7:9) = params.I_body \ tau_disturb * dt;  % angular accel
         accel_disturb(10:12) = F_disturb / params.m * dt;       % linear accel
@@ -566,7 +559,7 @@ for k = 1:(N-1)
     x_curr = x_lqr_dist(k, :)';
     ref_curr = x_ref_hover(k, :)';
     e_state = x_curr - ref_curr;
-
+    
     u_delta = -K * e_state;
     u = f_eq + u_delta;
     u = apply_force_constraints_3d(u, params);
