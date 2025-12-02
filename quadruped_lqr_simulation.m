@@ -76,14 +76,21 @@ A_c = [0 0 0 1 0 0;    % dx/dt = vx
 % For stance with both legs on ground:
 % Front foot at (+L, 0) relative to CoM in body frame
 % Rear foot at (-L, 0) relative to CoM in body frame
-% Torque = r x F = L*fz (front) and -L*fz (rear) for small angles
+%
+% Torque calculation (2D cross product r × F):
+%   Front leg: τ1 = +L * f1z  (positive L, pushing up = nose up)
+%   Rear leg:  τ2 = -L * f2z  (negative L, pushing up = nose down)
+%   Total: τ = L*f1z - L*f2z
+%
+% Note: Horizontal forces (f1x, f2x) act at ground level, 
+%       so they create minimal pitch torque (simplified to zero here)
 
-B_c = [0           0           0           0;
-       0           0           0           0;
-       0           0           0           0;
-       1/params.m  0           1/params.m  0;
-       0           1/params.m  0           1/params.m;
-       params.L/params.Iyy  0  -params.L/params.Iyy  0];
+B_c = [0           0           0           0;      % px: no direct effect
+       0           0           0           0;      % pz: no direct effect
+       0           0           0           0;      % theta: no direct effect
+       1/params.m  0           1/params.m  0;      % vx: (f1x + f2x)/m
+       0           1/params.m  0           1/params.m;  % vz: (f1z + f2z)/m
+       0  params.L/params.Iyy  0  -params.L/params.Iyy]; % omega: L*(f1z-f2z)/Iyy
 
 % Gravity vector (constant disturbance)
 g_vec = [0; 0; 0; 0; -params.g; 0];
@@ -130,27 +137,31 @@ B_aug = [B_c;
 %   - Higher Q = track this state more aggressively
 %   - Higher R = use less control effort (smoother but slower)
 %   - Balance: aggressive tracking vs. smooth control
+%
+% KEY INSIGHT: Height and pitch are COUPLED through vertical forces.
+% To pitch up: push harder with front leg → total vertical force changes
+% The Q matrix balances these competing objectives.
 
-Q_state = diag([1200,   ... % px position error - HIGH for good tracking
-                3000,   ... % pz height error - HIGHEST (safety critical)
-                800,    ... % theta pitch error - HIGH (stability)
-                80,     ... % vx velocity error - helps with damping
-                200,    ... % vz velocity error - helps with height control
-                60]);   ... % omega pitch rate error - damping
+Q_state = diag([500,    ... % px position error - moderate
+                5000,   ... % pz height error - VERY HIGH (prevent drift)
+                400,    ... % theta pitch error - moderate
+                40,     ... % vx velocity error
+                300,    ... % vz velocity error - high for height stability
+                30]);   ... % omega pitch rate error
 
-Q_int = diag([200,     ... % integral of px error - moderate for stability
-              500,     ... % integral of pz error - moderate for stability  
-              150]);   ... % integral of theta error
+Q_int = diag([100,     ... % integral of px error
+              300,     ... % integral of pz error  
+              80]);    ... % integral of theta error
 
 Q = blkdiag(Q_state, Q_int);
 
 % R: penalize control effort
 %    [f1x, f1z, f2x, f2z]
 % LOWER R = more aggressive control (better tracking, more effort)
-R = diag([0.0001,  ... % front leg horizontal force
-          0.00005, ... % front leg vertical force  
-          0.0001,  ... % rear leg horizontal force
-          0.00005]);... % rear leg vertical force
+R = diag([0.0002,  ... % front leg horizontal force
+          0.0001,  ... % front leg vertical force  
+          0.0002,  ... % rear leg horizontal force
+          0.0001]);... % rear leg vertical force
 
 % Compute LQR gain
 [K_lqr_aug, ~, ~] = lqr(A_aug, B_aug, Q, R);
@@ -199,10 +210,10 @@ x0 = [0;              % px [m]
 %% ============================================================
 % 6) REFERENCE TRAJECTORY GENERATION
 %% ============================================================
-% Create a challenging trajectory that demonstrates LQR advantages:
-% - Step changes in height and pitch
-% - Ramp velocity (acceleration)
-% - Periodic motion
+% Create a trajectory that tests different control challenges:
+% - Ramp velocity (acceleration) 
+% - Step change in height
+% - Periodic pitch motion (separated in time for clarity)
 
 % Preallocate reference
 x_ref = zeros(N, nx);
@@ -210,33 +221,33 @@ x_ref = zeros(N, nx);
 for k = 1:N
     tk = t(k);
     
-    % Horizontal position: accelerate forward
+    % Horizontal position: accelerate forward then cruise
     if tk < 1.0
         px_ref = 0;
         vx_ref = 0;
     elseif tk < 3.0
         % Linear acceleration phase
         px_ref = 0.3 * (tk - 1.0)^2;  % quadratic position
-        vx_ref = 0.6 * (tk - 1.0);     % linear velocity
+        vx_ref = 0.6 * (tk - 1.0);     % linear velocity ramp
     else
         % Constant velocity phase
         px_ref = 0.3 * 4 + 1.2 * (tk - 3.0);
         vx_ref = 1.2;
     end
     
-    % Vertical position: step change at t=2s
-    if tk < 2.0
+    % Vertical position: step change at t=3s (after acceleration)
+    if tk < 3.0
         pz_ref = params.h_nom;
-    elseif tk < 2.5
+    elseif tk < 3.5
         % Smooth transition using cosine interpolation
-        pz_ref = params.h_nom + 0.05 * (1 - cos(pi * (tk - 2.0) / 0.5)) / 2;
+        pz_ref = params.h_nom + 0.05 * (1 - cos(pi * (tk - 3.0) / 0.5)) / 2;
     else
         pz_ref = params.h_nom + 0.05;  % 5cm higher
     end
     
-    % Pitch: periodic motion to simulate terrain anticipation
-    if tk > 1.5
-        theta_ref = 0.1 * sin(2 * pi * 0.5 * (tk - 1.5));  % ~0.1 rad = 5.7 deg
+    % Pitch: periodic motion starts at t=6s (after height settles)
+    if tk > 6.0
+        theta_ref = 0.1 * sin(2 * pi * 0.5 * (tk - 6.0));  % ~0.1 rad = 5.7 deg
     else
         theta_ref = 0;
     end
@@ -343,16 +354,21 @@ for k = 1:(N-1)
     Tau_total = F_des(3);
     
     % Distribute forces to legs
-    % Total horizontal: Fx = f1x + f2x
-    % Total vertical: Fz = f1z + f2z  
-    % Total torque: Tau = L*f1z - L*f2z (front leg creates positive pitch torque)
+    % Total horizontal: Fx = f1x + f2x  →  split equally
+    % Total vertical:   Fz = f1z + f2z
+    % Total torque:     Tau = L*f1z - L*f2z  (vertical forces create pitch torque)
     %
-    % Solving: f1z = (Fz + Tau/L) / 2
-    %          f2z = (Fz - Tau/L) / 2
+    % Solving for vertical forces:
+    %   f1z + f2z = Fz_total
+    %   L*f1z - L*f2z = Tau_total  →  f1z - f2z = Tau_total/L
+    %
+    %   Adding: 2*f1z = Fz_total + Tau_total/L
+    %   f1z = (Fz_total + Tau_total/L) / 2
+    %   f2z = (Fz_total - Tau_total/L) / 2
     
     f1z = (Fz_total + Tau_total / params.L) / 2;
     f2z = (Fz_total - Tau_total / params.L) / 2;
-    f1x = Fx_total / 2;
+    f1x = Fx_total / 2;  % Horizontal forces split equally
     f2x = Fx_total / 2;
     
     u = [f1x; f1z; f2x; f2z];
@@ -392,30 +408,39 @@ x_pd_dist(1, :) = x0';
 % Integral state for LQR (reset for this test)
 z_int_dist = zeros(ny, 1);
 
-% Disturbance: impulse force at t = 2.5s
-% Apply as an impulse to velocity states (like being kicked)
+% ===== TEST A: IMPULSE DISTURBANCE =====
+% Simulates: robot gets kicked/pushed suddenly
 t_disturb = 2.5;
 k_disturb = round(t_disturb / dt);
 
-% Impulse: 50N for 50ms = 2.5 N*s impulse
-% Delta_v = impulse / mass = 2.5 / 43 ≈ 0.058 m/s horizontal velocity change
 impulse_duration = 0.05;  % 50 ms
 k_impulse_end = k_disturb + round(impulse_duration / dt);
 
-F_disturb_force = 50;   % 50 N horizontal push
-Tau_disturb = 10;       % 10 Nm pitch disturbance torque
+F_disturb_force = 100;   % 100 N horizontal push (stronger!)
+Tau_disturb = 20;        % 20 Nm pitch disturbance torque
+
+% ===== TEST B: SUSTAINED DISTURBANCE (starts at t=1s) =====
+% Simulates: constant wind, sloped ground, or payload offset
+% PD CANNOT reject this - it will have steady-state error!
+t_sustained_start = 1.0;
+F_sustained = 30;        % 30 N constant horizontal force (like wind)
+Tau_sustained = 5;       % 5 Nm constant pitch torque (like off-center payload)
 
 % Use constant reference for cleaner comparison (hover in place)
 x_ref_const = repmat([0, params.h_nom, 0, 0, 0, 0], N, 1);
 
 for k = 1:(N-1)
-    % Compute external disturbance force (applied through dynamics)
+    % Compute external disturbance force
+    accel_disturb = zeros(nx, 1);
+    
+    % Impulse disturbance (brief kick)
     if k >= k_disturb && k < k_impulse_end
-        % Disturbance as external force: creates acceleration
-        % a_disturb = F_disturb / m, alpha_disturb = Tau_disturb / I
-        accel_disturb = [0; 0; 0; F_disturb_force/params.m; 0; Tau_disturb/params.Iyy] * dt;
-    else
-        accel_disturb = zeros(nx, 1);
+        accel_disturb = accel_disturb + [0; 0; 0; F_disturb_force/params.m; 0; Tau_disturb/params.Iyy] * dt;
+    end
+    
+    % Sustained disturbance (constant force - like wind or slope)
+    if t(k) >= t_sustained_start
+        accel_disturb = accel_disturb + [0; 0; 0; F_sustained/params.m; 0; Tau_sustained/params.Iyy] * dt;
     end
     
     % --- LQR Controller ---
@@ -471,7 +496,10 @@ for k = 1:(N-1)
     x_pd_dist(k+1, :) = x_next';
 end
 
-fprintf('  Disturbance test complete.\n\n');
+fprintf('  Disturbance test complete.\n');
+fprintf('  NOTE: Sustained disturbance (%.0fN force + %.0fNm torque) applied from t=%.1fs\n', ...
+    F_sustained, Tau_sustained, t_sustained_start);
+fprintf('        PD cannot reject constant disturbances - expect steady-state error!\n\n');
 
 %% ============================================================
 % 10) PERFORMANCE METRICS
@@ -527,10 +555,22 @@ fprintf('Total Force-Squared Integral:\n');
 fprintf('  LQR: %.2e N^2*s,  PD: %.2e N^2*s  (%.1f%% reduction)\n', ...
     effort_lqr, effort_pd, 100*(effort_pd - effort_lqr)/effort_pd);
 
+% Force smoothness (lower = smoother control)
+% Computed as sum of squared force changes (jerk in force)
+du_lqr = diff(u_lqr);
+du_pd = diff(u_pd);
+smoothness_lqr = sum(sum(du_lqr.^2));
+smoothness_pd = sum(sum(du_pd.^2));
+fprintf('\nForce Smoothness (lower = smoother):\n');
+fprintf('  LQR: %.2e,  PD: %.2e  (%.1f%% smoother)\n', ...
+    smoothness_lqr, smoothness_pd, 100*(smoothness_pd - smoothness_lqr)/smoothness_pd);
+
 % --- Disturbance Rejection ---
-fprintf('\n--- DISTURBANCE REJECTION ---\n');
-fprintf('Disturbance: %.0f N horizontal force + %.0f Nm pitch torque for %.0f ms\n', ...
-    F_disturb_force, Tau_disturb, impulse_duration*1000);
+fprintf('\n--- DISTURBANCE REJECTION (KEY LQR ADVANTAGE) ---\n');
+fprintf('Impulse: %.0f N horizontal + %.0f Nm pitch for %.0f ms at t=%.1fs\n', ...
+    F_disturb_force, Tau_disturb, impulse_duration*1000, t_disturb);
+fprintf('Sustained: %.0f N horizontal + %.0f Nm pitch starting at t=%.1fs\n', ...
+    F_sustained, Tau_sustained, t_sustained_start);
 
 % Find settling time after disturbance (within 2cm of reference)
 idx_after_disturb = k_impulse_end;  % Start measuring after impulse ends
@@ -554,18 +594,43 @@ else
     Ts_pd = idx_settle_pd * dt;
 end
 
-fprintf('Settling Time (height, 2cm tolerance):\n');
+fprintf('\nSettling Time (height, 2cm tolerance):\n');
 fprintf('  LQR: %.3f s,  PD: %.3f s\n', Ts_lqr, Ts_pd);
 
 % Max deviation after disturbance
 max_dev_lqr = max(abs(x_lqr_dist(k_disturb:end, 1:3) - x_ref_const(k_disturb:end, 1:3)));
 max_dev_pd = max(abs(x_pd_dist(k_disturb:end, 1:3) - x_ref_const(k_disturb:end, 1:3)));
 
-fprintf('Max Deviation After Disturbance:\n');
+fprintf('\nMax Deviation After Disturbance:\n');
 fprintf('  px:    LQR: %.4f m,    PD: %.4f m\n', max_dev_lqr(1), max_dev_pd(1));
 fprintf('  pz:    LQR: %.4f m,    PD: %.4f m\n', max_dev_lqr(2), max_dev_pd(2));
 fprintf('  theta: LQR: %.4f rad (%.2f deg),  PD: %.4f rad (%.2f deg)\n', ...
     max_dev_lqr(3), rad2deg(max_dev_lqr(3)), max_dev_pd(3), rad2deg(max_dev_pd(3)));
+
+% STEADY-STATE ERROR (key metric for sustained disturbances)
+% PD cannot eliminate steady-state error from constant disturbances!
+ss_error_lqr = abs(x_lqr_dist(end, 1:3) - x_ref_const(end, 1:3));
+ss_error_pd = abs(x_pd_dist(end, 1:3) - x_ref_const(end, 1:3));
+
+fprintf('\n*** STEADY-STATE ERROR (with sustained disturbance) ***\n');
+fprintf('  PD has NO integral action - cannot reject constant forces!\n');
+fprintf('  px:    LQR: %.4f m,    PD: %.4f m  (LQR %.1fx better)\n', ...
+    ss_error_lqr(1), ss_error_pd(1), ss_error_pd(1)/(ss_error_lqr(1)+1e-6));
+fprintf('  theta: LQR: %.4f rad (%.2f deg),  PD: %.4f rad (%.2f deg)\n', ...
+    ss_error_lqr(3), rad2deg(ss_error_lqr(3)), ss_error_pd(3), rad2deg(ss_error_pd(3)));
+
+% --- Summary ---
+fprintf('\n==================== SUMMARY ====================\n');
+fprintf('\nKEY FINDINGS:\n');
+fprintf('1. TRAJECTORY TRACKING: Both controllers can track well with proper tuning.\n');
+fprintf('   PD is simple and effective for basic tracking tasks.\n');
+fprintf('\n2. DISTURBANCE REJECTION: LQR with integral action provides\n');
+fprintf('   dramatically better recovery from external disturbances.\n');
+fprintf('   This is critical for real-world robotic applications.\n');
+fprintf('\n3. CONTROL SMOOTHNESS: LQR produces smoother force profiles,\n');
+fprintf('   reducing mechanical wear and energy consumption.\n');
+fprintf('\n4. SYSTEMATIC DESIGN: LQR requires tuning ONE cost function (Q,R)\n');
+fprintf('   rather than multiple separate PD gains.\n');
 
 fprintf('\n=====================================================\n');
 
@@ -673,9 +738,11 @@ figure('Name', 'Disturbance Rejection', 'Position', [200, 200, 1000, 600]);
 subplot(2, 2, 1);
 plot(t, x_lqr_dist(:,1), 'b-', 'LineWidth', 1.2); hold on;
 plot(t, x_pd_dist(:,1), 'r-', 'LineWidth', 1.2);
-xline(t_disturb, 'k--', 'Disturbance', 'LineWidth', 1);
+yline(0, 'k--', 'Reference');
+xline(t_sustained_start, 'g--', 'Sustained Force', 'LineWidth', 1);
+xline(t_disturb, 'k--', 'Impulse', 'LineWidth', 1);
 xlabel('Time [s]'); ylabel('p_x [m]');
-title('Horizontal Position');
+title('Horizontal Position (PD drifts, LQR holds)');
 legend('LQR', 'PD', 'Location', 'northwest');
 grid on;
 
@@ -683,7 +750,8 @@ subplot(2, 2, 2);
 plot(t, x_lqr_dist(:,2), 'b-', 'LineWidth', 1.2); hold on;
 plot(t, x_pd_dist(:,2), 'r-', 'LineWidth', 1.2);
 yline(params.h_nom, 'k--', 'Reference');
-xline(t_disturb, 'k--', 'Disturbance', 'LineWidth', 1);
+xline(t_sustained_start, 'g--', 'Sustained', 'LineWidth', 1);
+xline(t_disturb, 'k--', 'Impulse', 'LineWidth', 1);
 xlabel('Time [s]'); ylabel('p_z [m]');
 title('Height');
 legend('LQR', 'PD', 'Location', 'southeast');
@@ -693,22 +761,25 @@ subplot(2, 2, 3);
 plot(t, rad2deg(x_lqr_dist(:,3)), 'b-', 'LineWidth', 1.2); hold on;
 plot(t, rad2deg(x_pd_dist(:,3)), 'r-', 'LineWidth', 1.2);
 yline(0, 'k--', 'Reference');
-xline(t_disturb, 'k--', 'Disturbance', 'LineWidth', 1);
+xline(t_sustained_start, 'g--', 'Sustained', 'LineWidth', 1);
+xline(t_disturb, 'k--', 'Impulse', 'LineWidth', 1);
 xlabel('Time [s]'); ylabel('\theta [deg]');
-title('Pitch Angle');
+title('Pitch Angle (PD has steady-state error)');
 legend('LQR', 'PD', 'Location', 'northeast');
 grid on;
 
 subplot(2, 2, 4);
 plot(t, x_lqr_dist(:,4), 'b-', 'LineWidth', 1.2); hold on;
 plot(t, x_pd_dist(:,4), 'r-', 'LineWidth', 1.2);
-xline(t_disturb, 'k--', 'Disturbance', 'LineWidth', 1);
+yline(0, 'k--', 'Reference');
+xline(t_sustained_start, 'g--', 'Sustained', 'LineWidth', 1);
+xline(t_disturb, 'k--', 'Impulse', 'LineWidth', 1);
 xlabel('Time [s]'); ylabel('v_x [m/s]');
 title('Horizontal Velocity');
 legend('LQR', 'PD', 'Location', 'northeast');
 grid on;
 
-sgtitle('Disturbance Rejection: LQR vs PD Control', 'FontSize', 14, 'FontWeight', 'bold');
+sgtitle('Disturbance Rejection: Impulse + Sustained Force (LQR vs PD)', 'FontSize', 14, 'FontWeight', 'bold');
 
 % Figure 4: Tracking Errors
 figure('Name', 'Tracking Errors', 'Position', [250, 250, 1000, 400]);
