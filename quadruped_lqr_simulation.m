@@ -125,25 +125,32 @@ B_aug = [B_c;
 % LQR weight matrices
 % Q: penalize state deviations
 %    [px, pz, theta, vx, vz, omega, int_px, int_pz, int_theta]
-Q_state = diag([100,    ... % px position error
-                500,    ... % pz height error (important!)
-                300,    ... % theta pitch error (important!)
-                10,     ... % vx velocity error
-                50,     ... % vz velocity error  
-                30]);   ... % omega pitch rate error
+%
+% TUNING PHILOSOPHY:
+%   - Higher Q = track this state more aggressively
+%   - Higher R = use less control effort (smoother but slower)
+%   - Balance: aggressive tracking vs. smooth control
 
-Q_int = diag([50,      ... % integral of px error
-              200,     ... % integral of pz error (height)
+Q_state = diag([1200,   ... % px position error - HIGH for good tracking
+                3000,   ... % pz height error - HIGHEST (safety critical)
+                800,    ... % theta pitch error - HIGH (stability)
+                80,     ... % vx velocity error - helps with damping
+                200,    ... % vz velocity error - helps with height control
+                60]);   ... % omega pitch rate error - damping
+
+Q_int = diag([200,     ... % integral of px error - moderate for stability
+              500,     ... % integral of pz error - moderate for stability  
               150]);   ... % integral of theta error
 
 Q = blkdiag(Q_state, Q_int);
 
 % R: penalize control effort
 %    [f1x, f1z, f2x, f2z]
-R = diag([0.001,   ... % front leg horizontal force
-          0.0005,  ... % front leg vertical force
-          0.001,   ... % rear leg horizontal force
-          0.0005]);... % rear leg vertical force
+% LOWER R = more aggressive control (better tracking, more effort)
+R = diag([0.0001,  ... % front leg horizontal force
+          0.00005, ... % front leg vertical force  
+          0.0001,  ... % rear leg horizontal force
+          0.00005]);... % rear leg vertical force
 
 % Compute LQR gain
 [K_lqr_aug, ~, ~] = lqr(A_aug, B_aug, Q, R);
@@ -274,8 +281,9 @@ for k = 1:(N-1)
     e_track = C_y * e_state;  % tracking error for integral
     
     % Update integral (with anti-windup clamp)
+    % IMPORTANT: Clamp must be tight to prevent windup over long simulations
     z_int = z_int + e_track * dt;
-    z_int = max(min(z_int, 1.0), -1.0);  % clamp integral
+    z_int = max(min(z_int, 0.1), -0.1);  % Tight clamp prevents windup
     
     % LQR control law (deviation from equilibrium)
     u_delta = -K_x * e_state - K_i * z_int;
@@ -418,7 +426,7 @@ for k = 1:(N-1)
     
     % Update integral with anti-windup
     z_int_dist = z_int_dist + e_track * dt;
-    z_int_dist = max(min(z_int_dist, 0.5), -0.5);  % tighter clamp for stability
+    z_int_dist = max(min(z_int_dist, 0.1), -0.1);  % Tight clamp
     
     % LQR control
     u_delta = -K_x * e_state - K_i * z_int_dist;
