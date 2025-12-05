@@ -464,34 +464,40 @@ max_pos_lqr = max(abs(x_lqr(:, 4:6)), [], 'all');
 max_pos_pd = max(abs(x_pd(:, 4:6)), [], 'all');
 max_angle_lqr = max(abs(x_lqr(:, 1:3)), [], 'all');
 max_angle_pd = max(abs(x_pd(:, 1:3)), [], 'all');
-fprintf('STABILITY CHECK\n');
-fprintf('  Max position magnitude: LQR=%.2f m, PD=%.2f m\n', max_pos_lqr, max_pos_pd);
-fprintf('  Max angle magnitude:    LQR=%.2f rad (%.0f deg), PD=%.2f rad (%.0f deg)\n', ...
+
+fprintf('--- STABILITY CHECK ---\n');
+fprintf('Max position magnitude: LQR=%.2f m, PD=%.2f m\n', max_pos_lqr, max_pos_pd);
+fprintf('Max angle magnitude:    LQR=%.2f rad (%.0f deg), PD=%.2f rad (%.0f deg)\n', ...
     max_angle_lqr, rad2deg(max_angle_lqr), max_angle_pd, rad2deg(max_angle_pd));
+
 if max_pos_pd > 10 || max_angle_pd > 2*pi
-    fprintf('WARNING: PD controller is unstable.\n');
+    fprintf('WARNING: PD controller appears UNSTABLE! Results may not be meaningful.\n');
 elseif max_pos_pd > 5 || max_angle_pd > pi
-    fprintf('WARNING: PD controller may need tuning.\n');
+    fprintf('WARNING: PD controller shows large deviations. May need tuning.\n');
 else
     fprintf('Both controllers are stable.\n');
 end
 fprintf('\n');
 
-% Check trajectory tracking
-fprintf('TRAJECTORY TRACKING\n');
+% --- Trajectory Tracking ---
+fprintf('--- TRAJECTORY TRACKING (3D Maneuver) ---\n');
 
-% Get RMS errors for each pose state 
-pose_states = {'Roll', 'Pitch', 'Yaw', 'px', 'py', 'pz'};
+% RMS errors for key states
+states_of_interest = {'Roll', 'Pitch', 'Yaw', 'px', 'py', 'pz'};
 units = {'deg', 'deg', 'deg', 'm', 'm', 'm'};
 scale = [180/pi, 180/pi, 180/pi, 1, 1, 1];
+
 for i = 1:6
     e_lqr = x_ref(:,i) - x_lqr(:,i);
     e_pd = x_ref(:,i) - x_pd(:,i);
+    
     rms_lqr = sqrt(mean(e_lqr.^2)) * scale(i);
     rms_pd = sqrt(mean(e_pd.^2)) * scale(i);
-    improvement = 100 * (rms_pd - rms_lqr) / rms_pd;   
-    fprintf('  %s RMS Error:\n', pose_states{i});
-    fprintf('    LQR: %.4f %s,  PD: %.4f %s  (%.1f%% improvement)\n', ...
+    
+    improvement = 100 * (rms_pd - rms_lqr) / rms_pd;
+    
+    fprintf('%s RMS Error:\n', states_of_interest{i});
+    fprintf('  LQR: %.4f %s,  PD: %.4f %s  (%.1f%% improvement)\n', ...
         rms_lqr, units{i}, rms_pd, units{i}, improvement);
 end
 
@@ -508,7 +514,7 @@ for i = 1:6
     ss_lqr_scaled = ss_lqr * scale(i);
     ss_pd_scaled = ss_pd * scale(i);
     
-    fprintf('%s Steady-State Error:\n', pose_states{i});
+    fprintf('%s Steady-State Error:\n', states_of_interest{i});
     fprintf('  LQR: %.4f %s,  PD: %.4f %s\n', ...
         ss_lqr_scaled, units{i}, ss_pd_scaled, units{i});
 end
