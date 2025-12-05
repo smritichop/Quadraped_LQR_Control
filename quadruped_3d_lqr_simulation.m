@@ -457,7 +457,7 @@ fprintf('  Disturbance test complete.\n');
 
 %% Print performance metrics
 
-fprintf('================= PERFORMANCE METRICS =================\n\n');
+fprintf('== PERFORMANCE METRICS ==\n\n');
 
 % Check for stability
 max_pos_lqr = max(abs(x_lqr(:, 4:6)), [], 'all');
@@ -475,10 +475,9 @@ elseif max_pos_pd > 5 || max_angle_pd > pi
 else
     fprintf('Both controllers are stable.\n');
 end
-fprintf('\n');
 
 % Check trajectory tracking
-fprintf('TRAJECTORY TRACKING\n');
+fprintf('\nTRAJECTORY TRACKING\n');
 
 % Get RMS errors for each pose state 
 pose_states = {'Roll', 'Pitch', 'Yaw', 'px', 'py', 'pz'};
@@ -495,50 +494,32 @@ for i = 1:6
         rms_lqr, units{i}, rms_pd, units{i}, improvement);
 end
 
-% --- Disturbance Rejection ---
-fprintf('\n--- DISTURBANCE REJECTION (Sustained Force) ---\n');
+% Check disturbance rejection
+fprintf('\nDISTURBANCE REJECTION\n');
 
-% Steady-state errors (last 2 seconds)
+% Get steady-state errors for each pose
 idx_ss = t > (T_sim - 2.0);
-
 for i = 1:6
     ss_lqr = mean(abs(x_lqr_dist(idx_ss, i)));
     ss_pd = mean(abs(x_pd_dist(idx_ss, i)));
-    
     ss_lqr_scaled = ss_lqr * scale(i);
     ss_pd_scaled = ss_pd * scale(i);
-    
-    fprintf('%s Steady-State Error:\n', pose_states{i});
-    fprintf('  LQR: %.4f %s,  PD: %.4f %s\n', ...
+    fprintf('  %s Steady-State Error:\n', pose_states{i});
+    fprintf('    LQR: %.4f %s,  PD: %.4f %s\n', ...
         ss_lqr_scaled, units{i}, ss_pd_scaled, units{i});
 end
 
-% --- Control Effort ---
-fprintf('\n--- CONTROL EFFORT ---\n');
+% Check control effort
+fprintf('\nCONTROL EFFORT\n');
 effort_lqr = sum(sum(u_lqr.^2)) * dt;
 effort_pd = sum(sum(u_pd.^2)) * dt;
-fprintf('Total Force-Squared Integral:\n');
-fprintf('  LQR: %.2e N^2*s,  PD: %.2e N^2*s\n', effort_lqr, effort_pd);
+fprintf('  Total Force-Squared For All Time:\n');
+fprintf('    LQR: %.2e N^2*s,  PD: %.2e N^2*s\n', effort_lqr, effort_pd);
 
-fprintf('\n==================== KEY FINDINGS ====================\n');
-fprintf('AGGRESSIVE TEST with fast maneuvers and large disturbances.\n');
-fprintf('\n');
-fprintf('LQR: Optimal control that accounts for ALL state couplings.\n');
-fprintf('PD:  Systematic second-order design treating axes independently.\n');
-fprintf('\n');
-fprintf('Under gentle conditions, both controllers work adequately.\n');
-fprintf('Under STRESS (fast turns, large pushes), the difference emerges:\n');
-fprintf('  - PD cannot coordinate coupled responses\n');
-fprintf('  - PD has no integral action → steady-state errors persist\n');
-fprintf('  - LQR handles coupling and eliminates steady-state error\n');
-fprintf('=====================================================\n\n');
+%% Visualization
 
-%% ============================================================
-% 11) VISUALIZATION
-%% ============================================================
-
-% Figure 1: 3D Trajectory Comparison
-figure('Name', '3D Trajectory Tracking', 'Position', [50, 50, 1400, 900]);
+% Figure 1: Trajectory Tracking Tests
+figure('Name', 'Trajectory Tracking Tests', 'Position', [50, 50, 1400, 900]);
 
 % Row 1: Orientation
 subplot(3, 4, 1);
@@ -606,7 +587,6 @@ legend('Ref', 'LQR', 'PD', 'Location', 'best');
 grid on;
 
 subplot(3, 4, 8);
-% Top-down view of path
 plot(x_ref(:,4), x_ref(:,5), 'k--', 'LineWidth', 2); hold on;
 plot(x_lqr(:,4), x_lqr(:,5), 'b-', 'LineWidth', 1.5);
 plot(x_pd(:,4), x_pd(:,5), 'r-', 'LineWidth', 1.5);
@@ -656,11 +636,10 @@ title('Height Error');
 legend('LQR', 'PD');
 grid on;
 
-sgtitle('AGGRESSIVE 3D Test: LQR vs PD (Fast Turns, Rapid Height Changes, Direction Reversals)', ...
-    'FontSize', 14, 'FontWeight', 'bold');
+sgtitle('Trajectory Tracking Tests', 'FontSize', 14, 'FontWeight', 'bold');
 
-% Figure 2: Disturbance Rejection
-figure('Name', 'Disturbance Rejection (3D)', 'Position', [100, 100, 1200, 600]);
+% Figure 2: Disturbance Rejection Tests
+figure('Name', 'Disturbance Rejection Tests', 'Position', [100, 100, 1200, 600]);
 
 subplot(2, 3, 1);
 plot(t, rad2deg(x_lqr_dist(:,1)), 'b-', 'LineWidth', 1.2); hold on;
@@ -722,33 +701,30 @@ title('Height Response');
 legend('LQR', 'PD');
 grid on;
 
-sgtitle('AGGRESSIVE Disturbance: Sustained Force [100,80,0]N + Torque [15,10,20]Nm', ...
-    'FontSize', 14, 'FontWeight', 'bold');
+sgtitle('Disturbance Rejection Tests', 'FontSize', 14, 'FontWeight', 'bold');
 
-fprintf('Simulation complete. Figures generated.\n');
+fprintf('Figures generated.\n');
 
-%% ============================================================
-% HELPER FUNCTIONS
-%% ============================================================
+%% Helper functions
 
 function S = skew(v)
-    % Skew-symmetric matrix for cross product: S*x = v × x
+    % Create a skew symmetric matrix
     S = [0, -v(3), v(2);
          v(3), 0, -v(1);
          -v(2), v(1), 0];
 end
 
 function u = apply_force_constraints_3d(u, params)
-    % Apply physical constraints to all 12 force components
-    % u = [f1x,f1y,f1z, f2x,f2y,f2z, f3x,f3y,f3z, f4x,f4y,f4z]
+    % Apply physical constraints
     
+    % For each leg...
     for leg = 1:4
         idx = (leg-1)*3 + (1:3);
         
         % Vertical force limits
         u(idx(3)) = max(params.f_min, min(params.f_max, u(idx(3))));
         
-        % Friction cone: |fx|, |fy| <= mu * fz
+        % Friction force limits
         max_horiz = params.mu * u(idx(3));
         u(idx(1)) = max(-max_horiz, min(max_horiz, u(idx(1))));
         u(idx(2)) = max(-max_horiz, min(max_horiz, u(idx(2))));
@@ -756,51 +732,30 @@ function u = apply_force_constraints_3d(u, params)
 end
 
 function u = distribute_forces_pd(tau_des, F_des, params)
-    % Force distribution for PD control
-    % Maps desired body wrench [τx, τy, τz, Fx, Fy, Fz] to 12 leg forces
-    %
-    % The key physics (from r × f for each leg):
-    %   τx (roll)  = Ly × (left_fz - right_fz)
-    %   τy (pitch) = Lx × (rear_fz - front_fz)  ← NOTE: rear minus front!
-    %   τz (yaw)   = Ly × (right_fx - left_fx) + Lx × (front_fy - rear_fy)
-    
+    % Distribute desired wrench forces to each leg
+
+    % Body params
     Lx = params.Lx;
     Ly = params.Ly;
     
-    % Equal distribution of total force
+    % Distribute force equally
     F_per_leg = F_des / 4;
     
-    % === Roll torque: τx = Ly × (left_fz - right_fz) ===
-    % To get τx = tau_des(1): left legs need +delta_roll, right legs need -delta_roll
-    % Total: τx = Ly × (2×(base+delta) - 2×(base-delta)) = 4×Ly×delta
+    % Achieve roll torque by actuation in z
     delta_z_roll = tau_des(1) / (4 * Ly);
     
-    % === Pitch torque: τy = Lx × (rear_fz - front_fz) ===
-    % To get τy = tau_des(2): rear legs need +delta_pitch, front legs need -delta_pitch
-    % Total: τy = Lx × (2×(base+delta) - 2×(base-delta)) = 4×Lx×delta
+    % Achieve pitch torque by actuation in z
     delta_z_pitch = tau_des(2) / (4 * Lx);
     
-    % === Yaw torque: τz = Ly × (right_fx - left_fx) ===
-    % To get positive yaw (turn left): right legs push forward (+fx), left push back (-fx)
-    % τz = Ly × ((+delta) - (-delta)) × 2 = 4×Ly×delta
+    % Achieve yaw torque by actuation in x
     delta_x_yaw = tau_des(3) / (4 * Ly);
-    
-    % Build force vector for each leg with CORRECT signs:
-    % Roll:  left (+Ly) gets +delta_roll,  right (-Ly) gets -delta_roll
-    % Pitch: rear (-Lx) gets +delta_pitch, front (+Lx) gets -delta_pitch
-    % Yaw:   right gets +delta_yaw (forward), left gets -delta_yaw (backward)
-    
-    % FL (front-left): +Lx, +Ly → front(-pitch), left(+roll), left(-yaw)
+       
+    % Add force deltas to each leg
     f_FL = F_per_leg + [-delta_x_yaw; 0; +delta_z_roll - delta_z_pitch];
-    
-    % FR (front-right): +Lx, -Ly → front(-pitch), right(-roll), right(+yaw)
     f_FR = F_per_leg + [+delta_x_yaw; 0; -delta_z_roll - delta_z_pitch];
-    
-    % RL (rear-left): -Lx, +Ly → rear(+pitch), left(+roll), left(-yaw)
     f_RL = F_per_leg + [-delta_x_yaw; 0; +delta_z_roll + delta_z_pitch];
-    
-    % RR (rear-right): -Lx, -Ly → rear(+pitch), right(-roll), right(+yaw)
     f_RR = F_per_leg + [+delta_x_yaw; 0; -delta_z_roll + delta_z_pitch];
     
+    % Stack control input
     u = [f_FL; f_FR; f_RL; f_RR];
 end
